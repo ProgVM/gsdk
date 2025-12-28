@@ -1,6 +1,6 @@
 # gsdk 🚀
 
-**gsdk** (Gemini SDK) is a lightweight, high-performance Python wrapper for the **Google Gemini API** (built on the modern `google-genai`). It is designed for production use, offering automatic key rotation, session persistence, and full flexibility for model configuration.
+**gsdk** (Gemini SDK) is a lightweight, high-performance Python wrapper for the **Google Gemini API** (built on the modern `google-genai`). It is designed for production use, offering automatic key rotation, session persistence, and real-time streaming.
 
 [![PyPI version](https://img.shields.io/pypi/v/gsdk.svg)](https://pypi.org/project/gsdk/)
 [![Python versions](https://img.shields.io/pypi/pyversions/gsdk.svg)](https://pypi.org/project/gsdk/)
@@ -9,12 +9,12 @@
 ## ✨ Key Features
 
 - 🔑 **Smart Key Rotation**: Automatically switch between multiple API keys when you hit rate limits (429/403).
-- 🔄 **Configurable Retries**: Set custom retry counts and delays to ensure stability.
-- 💾 **Session Persistence**: Built-in support for **File** and **Redis** storage to maintain conversation history.
+- 🌊 **Streaming Support**: Real-time response generation with automatic history updates.
+- 🔄 **Configurable Retries**: Set custom retry counts and delays for maximum stability.
+- 💾 **Session Persistence**: Built-in support for **File** and **Redis** storage.
 - ⚙️ **Full Flexibility**: Pass any generation parameter (`temperature`, `top_p`, `max_tokens`) globally or per request.
-- 🔍 **Google Search Grounding**: Easily enable real-time web search for the model.
-- 🎙️ **Live Multimodal**: Support for the Gemini Real-time (WebSockets) API.
-- 📁 **Media Support**: Simplified async file uploads for images, video, and audio.
+- 🔍 **Google Search Grounding**: Integrated real-time web search capabilities.
+- 📁 **Media Support**: Simplified async file uploads for multimodal tasks.
 
 ---
 
@@ -24,137 +24,104 @@
 pip install gsdk
 ```
 
-Make sure you have the requirements installed:
-```bash
-pip install google-genai redis
-```
-
 ---
 
 ## 🚀 Quick Start
 
+### Basic Chat
 ```python
 import asyncio
-import logging
 from gsdk import GeminiSDK
 
-# Enable logging to see key rotation and API status
-logging.basicConfig(level=logging.INFO)
-
 async def main():
-    # Initialize the SDK
-    sdk = GeminiSDK(
-        api_keys=["YOUR_API_KEY_1", "YOUR_API_KEY_2"],
-        model_name="gemini-flash-latest",
-        temperature=0.7 # Global setting
-    )
+    sdk = GeminiSDK(api_keys=["YOUR_API_KEY"], model_name="gemini-flash-latest")
 
-    # Simple text request
-    response = await sdk.ask("session_id_1", "Hello! Who are you?")
-    print(f"AI: {response.text}")
-
-    # Request with parameter override
-    response = await sdk.ask(
-        "session_id_1", 
-        "Tell me a very short story.", 
-        temperature=0.1,  # Overrides global 0.7
-        max_output_tokens=100
-    )
+    response = await sdk.ask("session_1", "Hello! Who are you?")
     print(f"AI: {response.text}")
 
 asyncio.run(main())
+```
+
+### 🌊 Real-time Streaming
+Perfect for chat interfaces where you want to show text as it is generated.
+
+```python
+async def stream_example():
+    sdk = GeminiSDK(api_keys=["KEY_1", "KEY_2"])
+    
+    print("AI: ", end="", flush=True)
+    async for chunk in sdk.ask_stream("session_1", "Write a long poem about coding."):
+        print(chunk, end="", flush=True)
+
+asyncio.run(stream_example())
 ```
 
 ---
 
 ## 🛠 Advanced Usage
 
-### 1. Key Rotation & Retry Logic
-Perfect for staying within free-tier limits. If one key hits a 429 error, **gsdk** waits and switches to the next one.
-
-```python
-sdk = GeminiSDK(
-    api_keys=["KEY_1", "KEY_2", "KEY_3"],
-    max_retries=10,
-    retry_delay=5.0  # Seconds to wait before retry
-)
-```
-
-### 2. Redis Storage (for Production)
-Use Redis to share chat history across multiple server instances.
+### 1. Production Storage (Redis)
+Share session history across multiple workers or servers.
 
 ```python
 from gsdk.storage import RedisStorage
 
-redis_store = RedisStorage(host='localhost', port=6379, db=0)
-sdk = GeminiSDK(api_keys=["..."], storage=redis_store)
+storage = RedisStorage(host='localhost', port=6379)
+sdk = GeminiSDK(api_keys=["..."], storage=storage)
 ```
 
-### 3. Media Uploads (Multimodal)
+### 2. Handling Images and Files
 ```python
-# Upload a file (Image/Video/PDF)
-uploaded_file = await sdk.media.upload_file("path/to/image.jpg")
+# Upload image or document
+media = await sdk.media.upload_file("chart.png")
 
-# Ask a question about the file
-response = await sdk.ask("session_2", [uploaded_file, "What is in this image?"])
+# Multimodal request
+response = await sdk.ask("session_2", [media, "Analyze this chart."])
 print(response.text)
 ```
 
-### 4. Google Search Grounding
-Enable the model to search the web for up-to-date information.
-
+### 3. Google Search Grounding
 ```python
 sdk = GeminiSDK(api_keys=["..."], use_search=True)
 
-response = await sdk.ask("news_chat", "What is the price of Bitcoin today?")
-print(f"Source info: {response.sources}")
-```
-
-### 5. Real-time Live API
-```python
-from gsdk import GeminiLive
-
-live = GeminiLive(api_key="YOUR_KEY")
-
-async def run_live():
-    async with live.start_session() as session:
-        await session.send("Hello!", end_of_turn=True)
-        async for message in session.receive():
-            print(message)
+response = await sdk.ask("news", "What's happening in AI today?")
+print(f"Sources used: {response.sources}")
 ```
 
 ---
 
 ## 📖 API Reference
 
-### `GeminiSDK` Configuration
+### `GeminiSDK` Methods
+
+| Method | Description |
+|--------|-------------|
+| `ask(session_id, content, **kwargs)` | Sends a message and returns a full `GeminiResponse`. |
+| `ask_stream(session_id, content, **kwargs)` | **Async Generator**. Yields text chunks and saves history after completion. |
+| `media.upload_file(path)` | Uploads a file to Google servers for multimodal input. |
+
+### Configuration Parameters
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `api_keys` | `List[str]` | Required | List of Google AI Studio API keys. |
-| `model_name` | `str` | `gemini-3-flash-preview` | The Gemini model to use. |
-| `system_instruction` | `str` | `None` | The system prompt for the model. |
-| `storage` | `BaseStorage` | `FileStorage` | Storage engine for sessions. |
-| `use_search` | `bool` | `True` | Enable Google Search grounding. |
-| `max_retries` | `int` | `keys * 3` | Total retries before raising an error. |
-| `retry_delay` | `float` | `5.0` | Seconds to wait between retries. |
-| `**generation_config`| `kwargs` | `None` | Any parameter supported by Gemini (temperature, top_p, etc.). |
+| `api_keys` | `List[str]` | Required | List of keys for rotation. |
+| `model_name` | `str` | `gemini-3-flash-preview` | The Gemini model version. |
+| `storage` | `BaseStorage` | `FileStorage` | How to store conversation history. |
+| `max_retries` | `int` | `keys * 3` | Total attempts for failed requests. |
+| `retry_delay` | `float` | `5.0` | Seconds to wait after a rate limit. |
+| `**gen_config` | `kwargs` | `None` | Global defaults for `temperature`, `top_p`, etc. |
 
 ---
 
 ## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+1. Fork the Project.
+2. Create your Feature Branch.
+3. Commit your Changes.
+4. Push to the Branch.
+5. Open a Pull Request.
 
 ## 📜 License
-
-Distributed under the MIT License. See `LICENSE` for more information.
+Distributed under the MIT License.
 
 ---
-
-**Developed with ❤️ for the Gemini Community.**
+**gsdk** — Powering the next generation of Gemini applications. 🚀
