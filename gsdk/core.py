@@ -75,7 +75,7 @@ class GeminiSDK:
             )
 
             if response.candidates and response.candidates[0].content:          model_content = response.candidates[0].content
-                if not model_content.role: model_content.role = "model"
+            if not model_content.role: model_content.role = "model"
                 self.storage.set(session_id, full_contents + [model_content])
 
             return self._parse_res(response)
