@@ -42,7 +42,6 @@ class GeminiSDK:
         self.media = MediaManager(self.client)
 
     def _prepare_config(self, tools: Optional[List[Any]] = None, **kwargs):
-        """Internal: Merges global and request-specific configs."""
         all_tools = []
         if self.use_search:
             all_tools.append(types.Tool(google_search=types.GoogleSearch()))
@@ -58,10 +57,20 @@ class GeminiSDK:
             **merged_config
         )
 
-    async def ask(self, session_id: str, content: Any, tools: Optional[List[Any]] = None, _retry_count: int = 0, **kwargs) -> GeminiResponse:
-        if _retry_count >= self.max_retries:
-             raise Exception("Max retries reached.")
+    def _is_retryable(self, e):
+        err_msg = str(e).lower()
+        return any(code in err_msg for code in ["429", "403", "503", "500", "quota", "exhausted"])
 
+    async def _rotate_key(self):
+        if len(self.api_keys) > 1:
+            self.current_key_idx = (self.current_key_idx + 1) % len(self.api_keys)
+            logger.warning(f"Rotating to key #{self.current_key_idx}")
+        else:
+            logger.warning(f"Rate limit hit. Waiting {self.retry_delay}s...")
+            await asyncio.sleep(self.retry_delay)
+        self._init_client()
+
+    async def ask(self, session_id: str, content: Any, tools: Optional[List[Any]] = None, _retry_count: int = 0, **kwargs) -> GeminiResponse:
         history = self.storage.get(session_id)
         user_parts = [types.Part.from_text(text=content)] if isinstance(content, str) else content
         
@@ -71,9 +80,7 @@ class GeminiSDK:
             config = self._prepare_config(tools=tools, **kwargs)
 
             response = await self.client.aio.models.generate_content(
-                model=self.model_name,
-                contents=full_contents,
-                config=config
+                model=self.model_name, contents=full_contents, config=config
             )
 
             if response.candidates:
@@ -84,7 +91,10 @@ class GeminiSDK:
             return self._parse_res(response)
 
         except Exception as e:
-            return await self._handle_error(e, session_id, content, tools, _retry_count, is_stream=False, **kwargs)
+            if self._is_retryable(e) and _retry_count < self.max_retries:
+                await self._rotate_key()
+                return await self.ask(session_id, content, tools, _retry_count + 1, **kwargs)
+            raise e
 
     async def ask_stream(self, session_id: str, content: Any, tools: Optional[List[Any]] = None, _retry_count: int = 0, **kwargs):
         history = self.storage.get(session_id)
@@ -96,9 +106,7 @@ class GeminiSDK:
             config = self._prepare_config(tools=tools, **kwargs)
 
             response_stream = await self.client.aio.models.generate_content_stream(
-                model=self.model_name,
-                contents=full_contents,
-                config=config
+                model=self.model_name, contents=full_contents, config=config
             )
 
             full_text = ""
@@ -106,50 +114,31 @@ class GeminiSDK:
 
             async for chunk in response_stream:
                 if chunk.candidates:
-                    part = chunk.candidates[0].content.parts[0]
-                    if part.text:
-                        full_text += part.text
-                        yield part.text
-                    if part.call:
-                        tool_calls.append(part.call)
-                        yield part.call
+                    for part in chunk.candidates[0].content.parts:
+                        if part.text:
+                            full_text += part.text
+                            yield part.text
+                        if part.call:
+                            tool_calls.append(part.call)
+                            yield part.call
 
             if full_text or tool_calls:
-                # Save both text and tool calls to history
                 parts = []
                 if full_text: parts.append(types.Part.from_text(text=full_text))
                 for call in tool_calls: parts.append(types.Part(call=call))
-                
                 model_content = types.Content(role="model", parts=parts)
                 self.storage.set(session_id, full_contents + [model_content])
 
         except Exception as e:
-            # For stream errors, rotation logic is handled inside handle_error
-            async for res in self._handle_error(e, session_id, content, tools, _retry_count, is_stream=True, **kwargs):
-                yield res
-
-    async def _handle_error(self, e, session_id, content, tools, _retry_count, is_stream=False, **kwargs):
-        error_msg = str(e).lower()
-        retryable = ["429", "403", "503", "500", "quota", "exhausted"]
-        
-        if any(code in error_msg for code in retryable) and _retry_count < self.max_retries:
-            if len(self.api_keys) > 1:
-                self.current_key_idx = (self.current_key_idx + 1) % len(self.api_keys)
-                logger.warning(f"Rotating to key #{self.current_key_idx}")
-            else:
-                await asyncio.sleep(self.retry_delay)
-            
-            self._init_client()
-            if is_stream:
+            if self._is_retryable(e) and _retry_count < self.max_retries:
+                await self._rotate_key()
                 async for chunk in self.ask_stream(session_id, content, tools, _retry_count + 1, **kwargs):
                     yield chunk
             else:
-                return await self.ask(session_id, content, tools, _retry_count + 1, **kwargs)
-        raise e
+                raise e
 
     def _parse_res(self, raw) -> GeminiResponse:
-        text = ""
-        tool_calls = []
+        text, tool_calls = "", []
         if raw.candidates:
             for part in raw.candidates[0].content.parts:
                 if part.text: text += part.text
