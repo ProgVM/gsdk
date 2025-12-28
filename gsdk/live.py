@@ -1,8 +1,8 @@
 from google import genai
 
 class GeminiLive:
-    """New Live Multimodal API (WebSockets/Bidi)"""
-    def __init__(self, api_key: str, model_name: str = "gemini-3.0-flash"):
+    """Live Multimodal API (WebSockets/Bidi)"""
+    def __init__(self, api_key: str, model_name: str = "gemini-3-flash-preview"):
         self.client = genai.Client(api_key=api_key, http_options={'api_version': 'v1alpha'})
         self.model_name = model_name
 
