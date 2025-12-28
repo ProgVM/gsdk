@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from typing import List, Optional, Union, Any, Dict
 from google import genai
 from google.genai import types
@@ -28,8 +29,8 @@ class GeminiSDK:
         self._init_client()
 
     def _init_client(self):
-        # Select API version based on model name
-        version = 'v1beta' if 'preview' in self.model_name or '2.0' in self.model_name else 'v1'
+        version = 'v1beta' 
+
         logger.info(f"Initializing client with key #{self.current_key_idx} (API: {version})")
 
         self.client = genai.Client(
@@ -46,10 +47,21 @@ class GeminiSDK:
             temperature=0.7
         )
 
-    async def ask(self, session_id: str, content: Any, **kwargs) -> GeminiResponse:
-        """
-        Sends a request to Gemini. Supports custom generation parameters via **kwargs.
-        """
+        tools = [types.Tool(google_search=types.GoogleSearch())] if self.use_search else None
+
+        self.config = types.GenerateContentConfig(
+            system_instruction=self.system_instruction,
+            tools=tools,
+            temperature=0.7
+        )
+
+    async def ask(self, session_id: str, content: Any, _retry_depth: int = 0, **kwargs) -> GeminiResponse:
+
+        max_retries = len(self.api_keys) * 3
+
+        if _retry_depth > max_retries:
+             raise Exception(f"❌ Gave up after {_retry_depth} tries. All keys/IP blocked.")
+
         history = self.storage.get(session_id)
 
         if isinstance(content, str):
@@ -61,7 +73,6 @@ class GeminiSDK:
             current_message = types.Content(role="user", parts=user_parts)
             full_contents = history + [current_message]
 
-            # Merge default config with runtime overrides
             current_config = self.config
             if kwargs:
                 config_dict = self.config.model_dump()
@@ -74,19 +85,40 @@ class GeminiSDK:
                 config=current_config
             )
 
-            if response.candidates and response.candidates[0].content:          model_content = response.candidates[0].content
-            if not model_content.role: model_content.role = "model"
+            if response.candidates and response.candidates[0].content:
+                model_content = response.candidates[0].content
+                if not model_content.role: model_content.role = "model"
                 self.storage.set(session_id, full_contents + [model_content])
 
             return self._parse_res(response)
 
         except Exception as e:
-            if "429" in str(e) and len(self.api_keys) > 1:
-                logger.warning(f"Key #{self.current_key_idx} exhausted. Rotating...")
-                self.current_key_idx = (self.current_key_idx + 1) % len(self.api_keys)
-                self._init_client()
-                return await self.ask(session_id, content, **kwargs)
-            logger.error(f"API Error: {e}")
+            error_str = str(e)
+
+            # Ловим 429, 403, 503
+            if any(code in error_str for code in ["429", "403", "503"]):
+                import asyncio
+
+                # Если ключей много
+                if len(self.api_keys) > 1:
+                    logger.warning(f"⚠️ Key #{self.current_key_idx} blocked. Rotating in 5s...")
+
+                    # МЕНЯЕМ КЛЮЧ
+                    self.current_key_idx = (self.current_key_idx + 1) % len(self.api_keys)
+                    self._init_client()
+
+                    # ЖДЕМ 5 СЕКУНД (чтобы IP остыл)
+                    await asyncio.sleep(5) 
+
+                    return await self.ask(session_id, content, _retry_depth=_retry_depth + 1, **kwargs)
+
+                else:
+                    wait_time = 5 * (_retry_depth + 1)
+                    logger.warning(f"⚠️ Limit hit. Waiting {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                    return await self.ask(session_id, content, _retry_depth=_retry_depth + 1, **kwargs)
+
+            logger.error(f"❌ Critical API Error: {error_str}")
             raise e
 
     def _parse_res(self, raw) -> GeminiResponse:
