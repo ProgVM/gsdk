@@ -136,6 +136,73 @@ class GeminiSDK:
             logger.error(f"Critical Gemini API Error: {e}")
             raise e
 
+    async def ask_stream(self, session_id: str, content: Any, _retry_count: int = 0, **request_kwargs):
+            """
+            Send a request and yield response chunks in real-time.
+            Automatically updates history once the stream is finished.
+            """
+            if _retry_count >= self.max_retries:
+                 logger.error(f"Stream request failed after {self.max_retries} attempts.")
+                 raise Exception("Max retries reached during streaming request.")
+
+            history = self.storage.get(session_id)
+
+            if isinstance(content, str):
+                user_parts = [types.Part.from_text(text=content)]
+            elif isinstance(content, list):
+                user_parts = content
+            else:
+                user_parts = [content]
+
+            try:
+                current_message = types.Content(role="user", parts=user_parts)
+                full_contents = history + [current_message]
+
+                # Merge configs
+                merged_config_dict = self.config.model_dump()
+                if request_kwargs:
+                    merged_config_dict.update(request_kwargs)
+                
+                final_config = types.GenerateContentConfig(**{k: v for k, v in merged_config_dict.items() if v is not None})
+
+                # Start the stream
+                response_stream = await self.client.aio.models.generate_content_stream(
+                    model=self.model_name,
+                    contents=full_contents,
+                    config=final_config
+                )
+
+                full_text = ""
+                async for chunk in response_stream:
+                    chunk_text = chunk.text or ""
+                    full_text += chunk_text
+                    yield chunk_text # Yielding text chunk to the user
+
+                # After stream finishes, save to history
+                if full_text:
+                    model_content = types.Content(role="model", parts=[types.Part.from_text(text=full_text)])
+                    self.storage.set(session_id, full_contents + [model_content])
+
+            except Exception as e:
+                error_msg = str(e).lower()
+                if any(code in error_msg for code in ["429", "403", "503", "500", "quota"]):
+                    if len(self.api_keys) > 1:
+                        self.current_key_idx = (self.current_key_idx + 1) % len(self.api_keys)
+                        logger.warning(f"Rate limit during stream start. Rotating to key #{self.current_key_idx}...")
+                    else:
+                        logger.warning(f"Rate limit during stream start. Sleeping {self.retry_delay}s...")
+
+                    self._init_client()
+                    await asyncio.sleep(self.retry_delay)
+                    
+                    # Recursively call the same generator
+                    async for chunk in self.ask_stream(session_id, content, _retry_count=_retry_count + 1, **request_kwargs):
+                        yield chunk
+                    return
+
+                logger.error(f"Critical Stream Error: {e}")
+                raise e
+
     def _parse_res(self, raw) -> GeminiResponse:
         """Parses the raw response into a GeminiResponse object with text and sources."""
         text = ""
