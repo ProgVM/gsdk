@@ -33,40 +33,43 @@ class GeminiSDK:
         self._init_client()
 
     def _init_client(self):
-        version = 'v1beta' 
+        # Using v1beta for tool support
         logger.info(f"Initializing client with key #{self.current_key_idx}")
         self.client = genai.Client(
             api_key=self.api_keys[self.current_key_idx],
-            http_options={'api_version': version}
+            http_options={'api_version': 'v1beta'}
         )
         self.media = MediaManager(self.client)
 
     def _prepare_config(self, tools: Optional[List[Any]] = None, **kwargs):
+        """Merges global and request-specific configs. Fixes 400 error."""
         all_tools = []
-        if self.use_search:
-            all_tools.append(types.Tool(google_search=types.GoogleSearch()))
+        
+        # If custom tools are provided, we temporarily disable search 
+        # to prevent "Tool use unsupported" conflict in some regions/models.
         if tools:
             all_tools.extend(tools)
+        elif self.use_search:
+            all_tools.append(types.Tool(google_search=types.GoogleSearch()))
 
+        # Merge generation config
         merged_config = self.base_gen_config.copy()
         merged_config.update(kwargs)
         
+        # Ensure we don't pass empty tools list
+        tools_param = all_tools if all_tools else None
+
         return types.GenerateContentConfig(
             system_instruction=self.system_instruction,
-            tools=all_tools if all_tools else None,
+            tools=tools_param,
             **merged_config
         )
-
-    def _is_retryable(self, e):
-        err_msg = str(e).lower()
-        return any(code in err_msg for code in ["429", "403", "503", "500", "quota", "exhausted"])
 
     async def _rotate_key(self):
         if len(self.api_keys) > 1:
             self.current_key_idx = (self.current_key_idx + 1) % len(self.api_keys)
             logger.warning(f"Rotating to key #{self.current_key_idx}")
         else:
-            logger.warning(f"Rate limit hit. Waiting {self.retry_delay}s...")
             await asyncio.sleep(self.retry_delay)
         self._init_client()
 
@@ -91,7 +94,7 @@ class GeminiSDK:
             return self._parse_res(response)
 
         except Exception as e:
-            if self._is_retryable(e) and _retry_count < self.max_retries:
+            if _retry_count < self.max_retries and any(x in str(e) for x in ["429", "403", "503", "500", "quota"]):
                 await self._rotate_key()
                 return await self.ask(session_id, content, tools, _retry_count + 1, **kwargs)
             raise e
@@ -120,7 +123,7 @@ class GeminiSDK:
                             yield part.text
                         if part.call:
                             tool_calls.append(part.call)
-                            yield part.call
+                            yield part.call # Yielding ToolCall object
 
             if full_text or tool_calls:
                 parts = []
@@ -130,7 +133,7 @@ class GeminiSDK:
                 self.storage.set(session_id, full_contents + [model_content])
 
         except Exception as e:
-            if self._is_retryable(e) and _retry_count < self.max_retries:
+            if _retry_count < self.max_retries and any(x in str(e) for x in ["429", "403", "503", "500", "quota"]):
                 await self._rotate_key()
                 async for chunk in self.ask_stream(session_id, content, tools, _retry_count + 1, **kwargs):
                     yield chunk
@@ -143,13 +146,4 @@ class GeminiSDK:
             for part in raw.candidates[0].content.parts:
                 if part.text: text += part.text
                 if part.call: tool_calls.append(part.call)
-
-        sources = []
-        try:
-            gm = raw.candidates[0].grounding_metadata
-            if gm.grounding_chunks:
-                for chunk in gm.grounding_chunks:
-                    if chunk.web: sources.append(f"{chunk.web.title}: {chunk.web.uri}")
-        except: pass
-
-        return GeminiResponse(text=text, tool_calls=tool_calls, sources=sources, raw=raw)
+        return GeminiResponse(text=text, tool_calls=tool_calls, raw=raw)
