@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gsdk"
-version = "1.0.6"
+version = "1.0.7"
 authors = [
   { name="ProgVM", email="progvminc@gmail.com" },
 ]
-description = "Lightweight, high-performance Python wrapper for the Google Gemini API"
+description = "Lightweight, high-performance Python wrapper for the Google Gemini API."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
